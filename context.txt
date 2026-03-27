@@ -1,0 +1,29 @@
+# Talk to bachelor biology students
+
+## Goal
+Give a talk to ~10 bachelors students aroundDevelopment of computational method to analyse data.
+To cover: Why we need bioinformatics? What problems it addresses, and how we develop tools to do so?
+
+## Students previous background
+Our group consists of third-year bachelor students in Biomedical Sciences, as well as master’s students from various programmes within the Graduate School of Life Sciences in Utrecht. As a result, the level of knowledge is somewhat heterogeneous: master’s students tend to have more specialised expertise, while bachelor students have a broader, but generally less in-depth, background. That said, all students should be able to follow the core concepts of the topics you mentioned. 
+Regarding specific areas:
+Oncology: All students have had basic oncology. The depth of knowledge varies depending on elective courses taken during the bachelor.
+Gene expression profiling: Students are familiar with interpreting outputs such as heatmaps and volcano plots, as this is covered in multiple bachelor courses.
+Sequencing techniques: Common sequencing methods have been covered in depth during several courses, and students are generally comfortable with the underlying principles.
+Transcriptomics (including single-cell and spatial): RNA sequencing is covered in the bachelor, including general concepts and applications. While students are familiar with the pipeline of data-processing, they will not all be able to fully explain each step in detail. During these courses, the emphasis has been on the methodology and interpreting results.
+
+## Topics of the talk
+
+1. My CV and my academic and professional story. Goal: show how I ended up being a bioinformatician and what steps in the career are needed. (see docs/CV_JosepGarnicaCaparros_short.txt). I started as wet lab but also as transcriptomic data produced in my lab piled up, during the covid lock down I started learning bioinformatics to analyse it.
+2. First biological problem solved by bioinformatics ("crisis of too much biological data."). Protein sequence analysis in the 1960s–70s
+3. Explore the curse of dimensionality and introduction to PCA
+4. How we annotate cell type in scRNA-seq data. Introduction into scGate (https://github.com/carmonalab/scGate) and ProjecTILs (https://github.com/carmonalab/ProjecTILs).
+5. Current challenges and future bioinformatic tools: address AI advantatges and limitations.
+
+
+## To-do
+
+- Keep level for bachelor's students
+- Generate a comprehensive .Rmd with text explaining these concepts and topics in detail, and add chunks of code to show ilustrative plots for this to be included in a powerpoint presentation.
+- Generate a jupyter notebook in python to showcase how to solve the protein sequence alignement, with a simple, interpretable main algorithm and chunks to show how it works step by step. This will be transfer then to google colab.
+- Focus on why we need these tools and how we set out to develop them

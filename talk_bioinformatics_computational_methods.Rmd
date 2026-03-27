@@ -1,0 +1,308 @@
+---
+title: "Why Bioinformatics? Developing Computational Methods to Analyze Biological Data"
+author: "Josep Garnica Caparros"
+date: "27 March 2026"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  fig.width = 7,
+  fig.height = 4
+)
+set.seed(1)
+```
+
+**Rendering note**: knitting to HTML requires **Pandoc** (bundled with RStudio, or install via Quarto / system package manager).
+
+# Audience and goals
+
+**Audience**: mostly 3rd-year Biomedical Sciences bachelor students (plus some MSc).
+
+**Goals of this talk**:
+
+- Understand *why* bioinformatics is needed (the “too much data” problem).
+- See how computational methods turn data into biological insight.
+- Learn the intuition behind a few core ideas:
+  - high-dimensional data and the curse of dimensionality
+  - dimensionality reduction (PCA) as a tool for interpretation
+  - cell type annotation in single-cell RNA-seq
+- Understand what it means to *develop* a method/tool (assumptions → algorithm → validation → usability).
+
+# 1. My story: how I ended up doing bioinformatics
+
+(Short personal narrative; adapt live.)
+
+- Started in wet lab work.
+- Generated transcriptomic data, which *accumulated faster than we could analyze it*.
+- During COVID lockdown: started learning bioinformatics to analyze my own data.
+- Realized that good tools matter because they make analysis:
+  - reproducible
+  - faster
+  - more interpretable
+  - more accessible for others
+
+If you want a short CV version, see: `docs/CV_JosepGarnicaCaparros_short.txt`.
+
+## The key message
+
+Bioinformatics is not “coding for coding’s sake”. It is **problem-driven**:
+
+- there is a biological question
+- data is generated to answer it
+- computational methods are needed to extract the answer reliably
+
+# 2. The first bioinformatics “crisis”: too much biological data
+
+A classic example: **protein sequences** in the 1960s–70s.
+
+- As soon as many sequences became available, humans could no longer compare them by eye.
+- We needed algorithms to:
+  - align sequences
+  - detect similarity
+  - infer evolutionary relationships
+  - identify conserved motifs/domains
+
+## A minimal framing of method development
+
+When you build a computational method, you typically decide:
+
+1. **Input**: what data do we accept?
+2. **Representation**: how do we encode it?
+3. **Objective**: what do we optimize (similarity, likelihood, classification accuracy)?
+4. **Algorithm**: how do we compute it efficiently?
+5. **Validation**: how do we know it works?
+6. **Packaging**: how do others use it? (docs, defaults, error messages)
+
+# 3. High-dimensional data and the curse of dimensionality
+
+Modern biology often measures **many variables per sample**.
+
+Examples:
+
+- bulk RNA-seq: ~20,000 genes per sample
+- single-cell RNA-seq: ~20,000 genes per cell (sparse counts)
+- proteomics / metabolomics: thousands of features
+
+This leads to two practical issues:
+
+- **Distance becomes less informative** (everything looks similarly far away).
+- **Models overfit** easily unless we have strong assumptions, regularization, or lots of data.
+
+## Intuition: distances in high dimension
+
+Let’s simulate points in increasing dimensions and look at how the ratio between the nearest and farthest neighbor distances changes.
+
+# ---
+# PLOT: Curse of dimensionality (dimension vs distance ratio)
+# ---
+```{r curse-of-dimensionality, fig.cap="Curse of dimensionality: distances concentrate", fig.path="figs/", fig.width=7, fig.height=4}
+# Simulate n points in [0,1]^d and compute pairwise distances
+simulate_ratio <- function(n = 400, d = 2) {
+  x <- matrix(runif(n * d), nrow = n)
+  # sample a subset of reference points to keep it fast
+  refs <- sample(seq_len(n), size = min(30, n))
+  ratios <- vapply(refs, function(i) {
+    di <- sqrt(rowSums((x - matrix(x[i, ], n, d, byrow = TRUE))^2))
+    di <- di[di > 0]
+    min(di) / max(di)
+  }, numeric(1))
+  mean(ratios)
+}
+
+dims <- c(2, 5, 10, 20, 50, 100, 200)
+ratios <- sapply(dims, function(d) simulate_ratio(n = 500, d = d))
+
+df <- data.frame(d = dims, ratio = ratios)
+
+png("figs/curse_of_dimensionality.png", width=700, height=400)
+plot(df$d, df$ratio,
+  type = "b", pch = 19,
+  xlab = "Dimension (d)", ylab = "Average (nearest / farthest) distance",
+  main = "Curse of dimensionality: distances concentrate")
+dev.off()
+```
+
+**Interpretation**: as $d$ grows, the nearest neighbor is not that much closer than the farthest neighbor. That makes clustering, kNN, and other distance-based ideas harder unless we reduce dimension or use better representations.
+
+# 4. PCA: a first tool to make high-dimensional data interpretable
+
+**Principal Component Analysis (PCA)** finds directions (linear combinations of features) that capture the largest variance.
+
+Why it’s useful:
+
+- compresses many features into a few “summary axes”
+- denoises (often)
+- reveals structure (batches, conditions, cell states)
+
+## PCA on a toy gene-expression-like dataset
+
+We’ll simulate two groups with subtle correlated shifts.
+
+# ---
+# PLOT: PCA toy example (PC1 vs PC2)
+# ---
+```{r pca-toy, fig.cap="PCA separates subtle multigene shifts", fig.path="figs/", fig.width=7, fig.height=4}
+# Simulate gene-expression-like data: samples x genes
+n <- 120
+p <- 200
+
+# two groups
+group <- rep(c("A", "B"), each = n/2)
+
+# base expression
+X <- matrix(rnorm(n * p), nrow = n)
+
+# add a low-rank signal affecting a subset of genes
+signal_genes <- 1:30
+X[group == "B", signal_genes] <- X[group == "B", signal_genes] + 0.8
+
+# scale genes (as typical before PCA)
+X_scaled <- scale(X)
+
+pc <- prcomp(X_scaled)
+
+png("figs/pca_toy.png", width=700, height=400)
+plot(pc$x[, 1], pc$x[, 2],
+  col = ifelse(group == "A", "steelblue", "tomato"),
+  pch = 19,
+  xlab = "PC1", ylab = "PC2",
+  main = "PCA separates subtle multigene shifts")
+legend("topright", legend = c("A", "B"), col = c("steelblue", "tomato"), pch = 19)
+dev.off()
+```
+
+## What PCA does and does not do
+
+- PCA is **not** a classifier.
+- PCA axes are **not automatically biological**; interpretation requires checking loadings and known biology.
+- PCA is sensitive to scaling and to strong technical effects (batch).
+
+# 5. scRNA-seq cell type annotation: from counts to cell identities
+
+In single-cell RNA-seq, a core task is: **assign each cell a label** (e.g., T cell, B cell, monocyte; and subtypes).
+
+## Why annotation is hard
+
+- Data are sparse (many zeros)
+- Cell states are continuous (not discrete)
+- Marker genes vary across tissues, activation states, and technologies
+- Batch effects and ambient RNA can confuse signatures
+
+## Three broad strategies
+
+1. **Marker-based** (manual): look at canonical marker genes.
+2. **Reference mapping**: map your data onto a labeled reference atlas.
+3. **Gating/signature-based**: automated “rules” with gene sets (analogous to flow cytometry gating).
+
+## Two tools: scGate and ProjecTILs
+
+- **scGate** (Carmona lab): signature-based gating for scRNA-seq.
+  - Repo: https://github.com/carmonalab/scGate
+  - Intuition: use curated markers and a gating model to separate cell types.
+
+- **ProjecTILs** (Carmona lab): projects T cells onto a reference T cell atlas.
+  - Repo: https://github.com/carmonalab/ProjecTILs
+  - Intuition: map new data into a shared “state space” to transfer labels.
+
+### What method development looks like here
+
+- define robust signatures / reference states
+- encode biological knowledge into a computational procedure
+- validate across datasets and technologies
+- make it usable (documentation, defaults, tutorials)
+
+## (Illustrative) marker heatmap for annotation thinking
+
+This chunk generates a *toy* marker heatmap you can use to explain the concept.
+
+# ---
+# PLOT: Toy marker heatmap (cell types x markers)
+# ---
+```{r marker-heatmap-toy, fig.cap="Toy marker expression by cell type", fig.path="figs/", fig.width=7, fig.height=4}
+# Toy expression for 6 markers across 3 cell types
+markers <- c("CD3D", "TRAC", "MS4A1", "CD79A", "LYZ", "S100A9")
+celltypes <- c("T cell", "B cell", "Myeloid")
+
+M <- matrix(c(
+  2.5, 2.2, 0.2, 0.1, 0.3, 0.2,  # T cell
+  0.2, 0.1, 2.7, 2.4, 0.3, 0.2,  # B cell
+  0.2, 0.1, 0.2, 0.1, 2.8, 2.6   # Myeloid
+), nrow = 3, byrow = TRUE)
+colnames(M) <- markers
+rownames(M) <- celltypes
+
+png("figs/marker_heatmap_toy.png", width=700, height=400)
+op <- par(mar = c(5, 6, 3, 1))
+image(t(M[nrow(M):1, ]), axes = FALSE, col = heat.colors(50),
+  main = "Toy marker expression by cell type")
+axis(1, at = seq(0, 1, length.out = ncol(M)), labels = colnames(M), las = 2)
+axis(2, at = seq(0, 1, length.out = nrow(M)), labels = rev(rownames(M)), las = 2)
+par(op)
+dev.off()
+```
+
+# 6. Current challenges and the future: AI in bioinformatics
+
+AI is powerful, but it is not magic. Useful framing:
+
+- **AI is a tool for pattern recognition**, often very strong at prediction.
+- In biology, we often need:
+  - interpretability
+  - uncertainty quantification
+  - causal reasoning
+  - generalization across cohorts and technologies
+
+## Advantages
+
+- Can model nonlinear relationships.
+- Can integrate multiple modalities (RNA + protein + images).
+- Can scale to very large datasets.
+
+## Limitations / risks
+
+- Data leakage and confounding.
+- Lack of interpretability.
+- Distribution shift (model trained on one dataset fails on another).
+- “Hallucinated biology”: plausible-looking but incorrect explanations.
+
+## A practical takeaway
+
+When you evaluate a new method (AI or not), ask:
+
+- What assumptions does it make?
+- What data was it trained/validated on?
+- What are failure modes?
+- Does it provide uncertainty / confidence?
+
+# 7. Key messages
+
+Key messages:
+
+- Bioinformatics exists because biological data outgrew manual analysis.
+- Method development is about making assumptions explicit and building reliable tools.
+- High-dimensional data requires careful representations; PCA is a first lens.
+- scRNA-seq annotation is a major applied problem with active method development.
+- AI is promising, but must be validated and interpreted carefully.
+
+```{r session-info, echo=FALSE}
+# Minimal reproducibility info (helps if knitting fails on another machine)
+sessionInfo()
+```
+
+# Appendix: slide-friendly prompts
+
+Use these prompts to build slides from this Rmd:
+
+- "Too much data" → timeline of sequencing and data growth
+- Curse of dimensionality plot (dimension vs distance ratio)
+- PCA toy example scatter (PC1 vs PC2)
+- Marker heatmap toy example
+- scGate / ProjecTILs: concept diagram (data → signatures/reference → labels)
