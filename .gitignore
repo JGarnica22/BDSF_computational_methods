@@ -2,3 +2,4 @@ docs/
 figs/
 .Rproj.user
 *.Rproj
+.DS_Store
