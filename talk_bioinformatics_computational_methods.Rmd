@@ -81,7 +81,67 @@ When you build a computational method, you typically decide:
 5. **Validation**: how do we know it works?
 6. **Packaging**: how do others use it? (docs, defaults, error messages)
 
+
 # 3. High-dimensional data and the curse of dimensionality
+
+
+png("figs/height_weight_2d.png", width=600, height=500)
+
+## Simple intuition: height vs weight (2D, with groups)
+
+Suppose you measure just two characteristics of people: height and weight. Here, we simulate two groups (A and B) with different means, and plot them with distinct colors and a legend for clarity, using ggplot2 and ggpubr::theme_classic2().
+
+```{r height-weight-2d, message=FALSE, warning=FALSE, fig.cap="People plotted by height and weight (2D, two groups)", fig.path="figs/", fig.width=6, fig.height=5}
+library(ggplot2)
+library(ggpubr)
+library(patchwork)
+set.seed(42)
+n <- 100
+group <- rep(c("A", "B"), each = n/2)
+height <- c(rnorm(n/2, mean = 165, sd = 7), rnorm(n/2, mean = 178, sd = 7))
+weight <- c(rnorm(n/2, mean = 62, sd = 8), rnorm(n/2, mean = 80, sd = 10))
+df2d <- data.frame(height, weight, group)
+cols <- c("#377eb8", "#e41a1c")
+
+p2d <- ggplot(df2d, aes(x = height, y = weight)) +
+  geom_point(size = 2.5, alpha = 0.8) +
+  scale_color_manual(values = cols, name = "Group") +
+  labs(x = "Height (cm)", y = "Weight (kg)",
+       title = "People: height vs weight") +
+  ggpubr::theme_classic2(base_size = 15)
+p2d_color <- ggplot(df2d, aes(x = height, y = weight, color = group)) +
+  geom_point(size = 2.5, alpha = 0.8) +
+  scale_color_manual(values = cols, name = "Group") +
+  labs(x = "Height (cm)", y = "Weight (kg)",
+       title = "People: height vs weight (two groups)") +
+  ggpubr::theme_classic2(base_size = 15)
+
+```
+
+
+age <- c(rnorm(n/2, mean = 38, sd = 7), rnorm(n/2, mean = 52, sd = 8))
+
+## Adding more variables: 3D and beyond (with groups)
+
+Now imagine you also measure age and cholesterol. Each person is now a point in 4D space (height, weight, age, cholesterol). Here, we show a 3D plot (height, weight, age) with the same two groups, using color and legend for clarity, using plotly for a modern look.
+
+```{r height-weight-age-3d, message=FALSE, warning=FALSE, fig.cap="People: height, weight, and age (3D, two groups)", fig.path="figs/", fig.width=6, fig.height=5}
+library(plotly)
+age <- c(rnorm(n/2, mean = 38, sd = 7), rnorm(n/2, mean = 52, sd = 8))
+df3d <- data.frame(height, weight, age, group)
+cols <- c("#377eb8", "#e41a1c")
+p3d <- plot_ly(df3d, x = ~height, y = ~weight, z = ~age, color = ~group, colors = cols, type = "scatter3d", mode = "markers", marker = list(size = 5, opacity = 0.8)) %>%
+  layout(scene = list(xaxis = list(title = "Height (cm)"),
+                     yaxis = list(title = "Weight (kg)"),
+                     zaxis = list(title = "Age (years)")),
+         title = "People: height, weight, age (two groups)")
+p3d
+htmlwidgets::saveWidget(p3d, "figs/height_weight_age_3d.html", selfcontained = TRUE)
+```
+
+## Curse of dimensionality: distances concentrate
+
+As you add more variables (dimensions), all points become similarly far apart. This makes clustering and nearest-neighbor methods less effective unless you reduce dimension or use better representations.
 
 Modern biology often measures **many variables per sample**.
 
