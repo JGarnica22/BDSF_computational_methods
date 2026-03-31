@@ -139,210 +139,462 @@ p3d
 htmlwidgets::saveWidget(p3d, "figs/height_weight_age_3d.html", selfcontained = TRUE)
 ```
 
-## Curse of dimensionality: distances concentrate
+# 4. PCA in bulk RNA-seq
 
-As you add more variables (dimensions), all points become similarly far apart. This makes clustering and nearest-neighbor methods less effective unless you reduce dimension or use better representations.
-
-Modern biology often measures **many variables per sample**.
-
-Examples:
-
-- bulk RNA-seq: ~20,000 genes per sample
-- single-cell RNA-seq: ~20,000 genes per cell (sparse counts)
-- proteomics / metabolomics: thousands of features
-
-This leads to two practical issues:
-
-- **Distance becomes less informative** (everything looks similarly far away).
-- **Models overfit** easily unless we have strong assumptions, regularization, or lots of data.
-
-## Intuition: distances in high dimension
-
-Let’s simulate points in increasing dimensions and look at how the ratio between the nearest and farthest neighbor distances changes.
-
-# ---
-# PLOT: Curse of dimensionality (dimension vs distance ratio)
-# ---
-```{r curse-of-dimensionality, fig.cap="Curse of dimensionality: distances concentrate", fig.path="figs/", fig.width=7, fig.height=4}
-# Simulate n points in [0,1]^d and compute pairwise distances
-simulate_ratio <- function(n = 400, d = 2) {
-  x <- matrix(runif(n * d), nrow = n)
-  # sample a subset of reference points to keep it fast
-  refs <- sample(seq_len(n), size = min(30, n))
-  ratios <- vapply(refs, function(i) {
-    di <- sqrt(rowSums((x - matrix(x[i, ], n, d, byrow = TRUE))^2))
-    di <- di[di > 0]
-    min(di) / max(di)
-  }, numeric(1))
-  mean(ratios)
-}
-
-dims <- c(2, 5, 10, 20, 50, 100, 200)
-ratios <- sapply(dims, function(d) simulate_ratio(n = 500, d = d))
-
-df <- data.frame(d = dims, ratio = ratios)
-
-png("figs/curse_of_dimensionality.png", width=700, height=400)
-plot(df$d, df$ratio,
-  type = "b", pch = 19,
-  xlab = "Dimension (d)", ylab = "Average (nearest / farthest) distance",
-  main = "Curse of dimensionality: distances concentrate")
-dev.off()
+```{r}
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(tibble)
+library(ggplot2)
+library(factoextra)
+library(DESeq2)
 ```
 
-**Interpretation**: as $d$ grows, the nearest neighbor is not that much closer than the farthest neighbor. That makes clustering, kNN, and other distance-based ideas harder unless we reduce dimension or use better representations.
+## dummy
 
-# 4. PCA: a first tool to make high-dimensional data interpretable
+```{r}
+set.seed(22)
 
-**Principal Component Analysis (PCA)** finds directions (linear combinations of features) that capture the largest variance.
+# Simulate correlated data
+x <- rnorm(100)
+y <- x * 0.8 + rnorm(100, sd = 0.3)
+df <- data.frame(x, y)
 
-Why it’s useful:
+# PCA
+pca <- prcomp(df, scale. = TRUE)
 
-- compresses many features into a few “summary axes”
-- denoises (often)
-- reveals structure (batches, conditions, cell states)
+# Plot
+plot(df$x, df$y, pch = 19, col = "grey",
+     main = "PCA finds directions of maximum variance")
 
-## PCA on a toy gene-expression-like dataset
+# Add PC axes
+arrows(0, 0,
+       pca$rotation[1,1]*3, pca$rotation[2,1]*3,
+       col = "red", lwd = 2)
+arrows(0, 0,
+       pca$rotation[1,2]*3, pca$rotation[2,2]*3,
+       col = "blue", lwd = 2)
 
-We’ll simulate two groups with subtle correlated shifts.
-
-# ---
-# PLOT: PCA toy example (PC1 vs PC2)
-# ---
-```{r pca-toy, fig.cap="PCA separates subtle multigene shifts", fig.path="figs/", fig.width=7, fig.height=4}
-# Simulate gene-expression-like data: samples x genes
-n <- 120
-p <- 200
-
-# two groups
-group <- rep(c("A", "B"), each = n/2)
-
-# base expression
-X <- matrix(rnorm(n * p), nrow = n)
-
-# add a low-rank signal affecting a subset of genes
-signal_genes <- 1:30
-X[group == "B", signal_genes] <- X[group == "B", signal_genes] + 0.8
-
-# scale genes (as typical before PCA)
-X_scaled <- scale(X)
-
-pc <- prcomp(X_scaled)
-
-png("figs/pca_toy.png", width=700, height=400)
-plot(pc$x[, 1], pc$x[, 2],
-  col = ifelse(group == "A", "steelblue", "tomato"),
-  pch = 19,
-  xlab = "PC1", ylab = "PC2",
-  main = "PCA separates subtle multigene shifts")
-legend("topright", legend = c("A", "B"), col = c("steelblue", "tomato"), pch = 19)
-dev.off()
+legend("topright", legend = c("PC1", "PC2"),
+       col = c("red", "blue"), lwd = 2)
 ```
 
-## What PCA does and does not do
 
-- PCA is **not** a classifier.
-- PCA axes are **not automatically biological**; interpretation requires checking loadings and known biology.
-- PCA is sensitive to scaling and to strong technical effects (batch).
 
-# 5. scRNA-seq cell type annotation: from counts to cell identities
+## Load datasets and process
 
-In single-cell RNA-seq, a core task is: **assign each cell a label** (e.g., T cell, B cell, monocyte; and subtypes).
+```{r}
 
-## Why annotation is hard
+file_path <- "data/GSE173681_Tet_TF_Basal_Stim_Raw_counts.xlsx"
 
-- Data are sparse (many zeros)
-- Cell states are continuous (not discrete)
-- Marker genes vary across tissues, activation states, and technologies
-- Batch effects and ambient RNA can confuse signatures
+mat_df <- readxl::read_xlsx(file_path)
+# process df into matrix
 
-## Three broad strategies
+sample_names <- names(mat_df)[7:18] %>% 
+  # remove technical replicates
+  grep("C_", ., invert = T, value = T)
 
-1. **Marker-based** (manual): look at canonical marker genes.
-2. **Reference mapping**: map your data onto a labeled reference atlas.
-3. **Gating/signature-based**: automated “rules” with gene sets (analogous to flow cytometry gating).
+counts <- mat_df %>% 
+  tibble::column_to_rownames("Gene_name") %>% 
+  select(all_of(sample_names)) %>% 
+  as.matrix()
+#Transform the matrix by rounding the counts and transforming the values from "numeric" to "integer"
+counts <- apply(counts, c(1,2), round)
+mat <- apply(counts, c(1,2), as.integer)
+  
 
-## Two tools: scGate and ProjecTILs
-
-- **scGate** (Carmona lab): signature-based gating for scRNA-seq.
-  - Repo: https://github.com/carmonalab/scGate
-  - Intuition: use curated markers and a gating model to separate cell types.
-
-- **ProjecTILs** (Carmona lab): projects T cells onto a reference T cell atlas.
-  - Repo: https://github.com/carmonalab/ProjecTILs
-  - Intuition: map new data into a shared “state space” to transfer labels.
-
-### What method development looks like here
-
-- define robust signatures / reference states
-- encode biological knowledge into a computational procedure
-- validate across datasets and technologies
-- make it usable (documentation, defaults, tutorials)
-
-## (Illustrative) marker heatmap for annotation thinking
-
-This chunk generates a *toy* marker heatmap you can use to explain the concept.
-
-# ---
-# PLOT: Toy marker heatmap (cell types x markers)
-# ---
-```{r marker-heatmap-toy, fig.cap="Toy marker expression by cell type", fig.path="figs/", fig.width=7, fig.height=4}
-# Toy expression for 6 markers across 3 cell types
-markers <- c("CD3D", "TRAC", "MS4A1", "CD79A", "LYZ", "S100A9")
-celltypes <- c("T cell", "B cell", "Myeloid")
-
-M <- matrix(c(
-  2.5, 2.2, 0.2, 0.1, 0.3, 0.2,  # T cell
-  0.2, 0.1, 2.7, 2.4, 0.3, 0.2,  # B cell
-  0.2, 0.1, 0.2, 0.1, 2.8, 2.6   # Myeloid
-), nrow = 3, byrow = TRUE)
-colnames(M) <- markers
-rownames(M) <- celltypes
-
-png("figs/marker_heatmap_toy.png", width=700, height=400)
-op <- par(mar = c(5, 6, 3, 1))
-image(t(M[nrow(M):1, ]), axes = FALSE, col = heat.colors(50),
-  main = "Toy marker expression by cell type")
-axis(1, at = seq(0, 1, length.out = ncol(M)), labels = colnames(M), las = 2)
-axis(2, at = seq(0, 1, length.out = nrow(M)), labels = rev(rownames(M)), las = 2)
-par(op)
-dev.off()
+metadata <- data.frame(sample_name = sample_names) %>% 
+  mutate(condition = ifelse(grepl("Tet", sample_name),
+                            "Stimulated",
+                            "Basal")
+         ) %>% 
+  tibble::column_to_rownames("sample_name")
 ```
 
-# 6. Current challenges and the future: AI in bioinformatics
 
-AI is powerful, but it is not magic. Useful framing:
+Barplots differences between top 10 genes between condition A and cell type B
+Barplots differences between top 10 PCA between cell type A and cell type B
 
-- **AI is a tool for pattern recognition**, often very strong at prediction.
-- In biology, we often need:
-  - interpretability
-  - uncertainty quantification
-  - causal reasoning
-  - generalization across cohorts and technologies
+## Normaliza data using DESeq2
 
-## Advantages
+```{r}
+dds <- DESeqDataSetFromMatrix(
+  countData = mat,
+  colData = metadata,
+  design = ~ condition
+)
 
-- Can model nonlinear relationships.
-- Can integrate multiple modalities (RNA + protein + images).
-- Can scale to very large datasets.
+# Remove genes with very low counts
+dds <- dds[rowSums(counts(dds)) > 10, ]
 
-## Limitations / risks
+# DESeq2 size factor normalization + VST
+DESeq.ds_f <- estimateSizeFactors(dds)
+vsd <- vst(DESeq.ds_f, blind = TRUE)
 
-- Data leakage and confounding.
-- Lack of interpretability.
-- Distribution shift (model trained on one dataset fails on another).
-- “Hallucinated biology”: plausible-looking but incorrect explanations.
+norm_counts <- assay(vsd)
+```
 
-## A practical takeaway
+## Get highly variable genes
 
-When you evaluate a new method (AI or not), ask:
+```{r}
+# Compute variance for each gene across samples
+gene_variances <- apply(norm_counts, 1, var)
 
-- What assumptions does it make?
-- What data was it trained/validated on?
-- What are failure modes?
-- Does it provide uncertainty / confidence?
+# Rank genes by variance
+gene_variances <- sort(gene_variances, decreasing = TRUE)
 
-# 7. Key messages
+# Select top N HVGs (e.g., 2000)
+top_n <- 500
+hvg_genes <- names(gene_variances)[1:top_n]
+
+# Subset normalized matrix
+hvg_matrix <- norm_counts[hvg_genes, ]
+```
+
+## barplot hvg
+
+```{r}
+tophvg <- names(gene_variances)[100:107] %>% 
+  grep("Trav", ., invert = T, value = T)
+tophvg_exp <- norm_counts[tophvg,] %>% 
+  as.data.frame() %>% 
+  tibble::rownames_to_column("gene") %>% 
+  pivot_longer(-gene,
+               names_to = "sample_name",
+               values_to = "expression")
+
+exp <- left_join(tophvg_exp, 
+                 metadata %>% rownames_to_column("sample_name"),
+                 by = "sample_name")
+```
+
+```{r}
+bplot <- exp %>%
+  ggplot(aes(expression, gene)) +
+  geom_point(
+    aes(color = condition, group = condition),
+    position = position_jitterdodge(jitter.width = 0.2, dodge.width = 1),
+    alpha = 0.5,
+    show.legend = TRUE
+  ) +
+  stat_summary(
+    aes(fill = condition),
+    fun = median,
+    geom = "col",
+    position = position_dodge(1),
+    alpha = 0.3
+  ) +
+  scale_fill_manual(values = c(
+    "#6C8EBF",
+    "#B07C59"
+  )) +
+    scale_color_manual(values = c(
+    "#6C8EBF",
+    "#B07C59"
+  )) +
+  labs(y = "Top 5 variable genes",
+       x = "Gene expression") +
+  ggpubr::theme_classic2()
+
+
+bplot
+
+pairs(t(norm_counts)[,tophvg], main = "Gene space")
+```
+
+## Do PCA
+
+```{r}
+# Transpose: PCA expects samples as rows
+pca_res <- prcomp(t(hvg_matrix), center = TRUE, scale. = TRUE)
+
+# Variance explained
+explained_var <- pca_res$sdev^2 / sum(pca_res$sdev^2)
+
+```
+
+### barplot pca
+
+```{r}
+pca5 <- pca_res$x[,1:5] %>% 
+  as.data.frame() %>% 
+  tibble::rownames_to_column("sample_name") %>% 
+  pivot_longer(-sample_name,
+               names_to = "PC",
+               values_to = "value")
+
+pca5 <- left_join(pca5, 
+                 metadata %>% rownames_to_column("sample_name"),
+                 by = "sample_name")
+```
+
+
+```{r}
+bplot_pca <- pca5 %>%
+  ggplot(aes(value, PC)) +
+  geom_point(
+    aes(color = condition, group = condition),
+    position = position_jitterdodge(jitter.width = 0.2, dodge.width = 1),
+    alpha = 0.5,
+    show.legend = TRUE
+  ) +
+  stat_summary(
+    aes(fill = condition),
+    fun = median,
+    geom = "col",
+    position = position_dodge(1),
+    alpha = 0.3
+  ) +
+  scale_fill_manual(values = c(
+    "#6C8EBF",
+    "#B07C59"
+  )) +
+    scale_color_manual(values = c(
+    "#6C8EBF",
+    "#B07C59"
+  )) +
+  labs(y = "Top 5 Principal Componenets",
+       x = "Value") +
+  ggpubr::theme_classic2()
+
+
+bplot_pca
+```
+
+
+
+
+
+
+Show loadings of main PCA of each genes
+
+what genes contributes to first PCs?
+
+Biplot PCA
+
+```{r}
+require(factoextra)
+
+var_explained <- (pca_res$sdev^2) / sum(pca_res$sdev^2)
+
+pca_plot <- fviz_pca_biplot(pca_res,
+                            habillage = metadata$condition,
+                            geom = "point",
+                            invisible = c("quali", "var"),
+                            pointsize = 4,
+                            title = ""
+)
+```
+
+```{r}
+pca_biplot <- fviz_pca_biplot(
+  pca_res,
+  habillage = metadata$condition,
+  geom = "point",
+  invisible = c("quali"),
+  pointsize = 4,
+  title = "",
+  repel = T,
+  select.var = list(contrib = 10)  # 👈 top 10 variables
+)
+```
+
+
+```{r}
+# Contributions of variables to PC1
+contrib1 <- fviz_contrib(pca_res, choice = "var", axes = 1, top = 10)
+# Contributions of variables to PC2
+contrib2 <- fviz_contrib(pca_res, choice = "var", axes = 2, top = 10)
+
+ggpubr::ggarrange(plotlist = list(contrib1, contrib2), ncol = 1)
+```
+
+```{r}
+fviz_screeplot(pca_res, addlabels = TRUE)
+```
+
+
+```{r}
+var <- get_pca_var(pca_res)
+head(var$contrib)
+```
+
+# 5. single-cell annotation
+
+## load datasets
+Load and simplify Bassez dataset
+
+```{r}
+require(scGate)
+require(Seurat)
+require(dplyr)
+require(tidyr)
+require(ggplot2)
+require(patchwork)
+```
+
+
+```{r}
+sc_path <- "~/Documents/Projects/Demos/HiTME_CaseStudies/input/bassez_3patients.rds"
+bassez <- readRDS(sc_path)
+# one patient
+bassez <- bassez[,bassez$patient_id == "BIOKEY_13"]
+
+# ONLY 100 CELLS PER T_cell, B_cell, and Cancer_cell
+set.seed(22)
+
+# Define number of cells per category
+n_cells <- 100
+sel_ct <- c("T_cell", "Fibroblast", "Endothelial_cell")
+
+# Randomly sample cells per category
+cells_to_keep <- bassez@meta.data %>%
+  tibble::rowid_to_column("cellid") %>% 
+  filter(cellType %in% sel_ct) %>% 
+  group_by(cellType) %>%            # replace 'celltype' with your column
+  sample_n(size = min(n(), n_cells)) %>%   # if category < 100, take all
+  pull(cellid)                    # extract cell names
+
+# Subset Seurat object
+bas <- subset(bassez, cells = cells_to_keep)
+
+table(bas$cellType)
+
+bas$annotation <- factor(bas$cellType,
+                         levels = sel_ct,
+                         labels = c("T_cell", "Fibroblast", "Endothelial"))
+rm(bassez); gc()
+```
+
+## Proceessing & PCA
+
+```{r}
+
+bas <- NormalizeData(bas)
+
+bas <- FindVariableFeatures(bas, 
+                           selection.method = "vst", 
+                           nfeatures = 1000)
+bas <- ScaleData(bas, features = VariableFeatures(bas))
+bas <- RunPCA(bas, features = VariableFeatures(bas))
+
+DimPlot(bas, reduction = "pca", group.by = "annotation") 
+
+bas <- RunUMAP(bas, dims = 1:20)
+
+DimPlot(bas, reduction = "umap", group.by = "annotation") 
+```
+### pca
+```{r}
+pca_sd <- bas[["pca"]]@stdev         # standard deviations of PCs
+pca_var <- pca_sd^2                  # variance per PC
+pca_var_explained <- round(100 * pca_var / sum(pca_var), 1)  # % variance
+
+pcaplot_sc <- DimPlot(bas, reduction = "pca") +
+  scale_color_manual(values = "black") +
+  xlab(paste0("PC1 (", pca_var_explained[1], "%)")) +
+  ylab(paste0("PC2 (", pca_var_explained[2], "%)")) +
+  NoLegend()
+```
+## markers
+
+```{r}
+markers_list <- list(
+  T_cells       = c("CD3D", "CD3E"),
+  Fibroblasts   = c("DCN", "COL1A1"),
+  Endothelial   = c("PECAM1", "VWF"),
+  Epithelial    = c("EPCAM", "KRT18")
+)
+```
+
+## violin plot
+```{r}
+marker_lookup <- unlist(markers_list)
+# unlist produces a vector of genes; we need names = genes, values = cell type
+marker_lookup <- setNames(rep(names(markers_list), lengths(markers_list)),
+                          unlist(markers_list))
+
+norm_mat <- bas@assays$RNA@data[unlist(markers_list), ] %>% 
+  as.matrix() %>% 
+  t() %>% 
+  as.data.frame() %>% 
+  tibble::rownames_to_column("cellid") %>% 
+  pivot_longer(
+    -cellid,
+    names_to = "gene",
+    values_to = "expression"
+  ) %>%
+  mutate(celltype_marker = marker_lookup[gene])
+
+
+vln <- norm_mat %>% 
+  ggplot(aes(expression, gene, fill = celltype_marker, color = celltype_marker)) +
+  geom_jitter(alpha = 0.5,
+              width = 0.1) +
+  geom_violin(alpha = 0.3) +
+  ggpubr::theme_classic2()
+
+vln
+```
+
+## heatmap
+
+```{r}
+require(pheatmap)
+phat_mat <- bas@assays$RNA@data[unlist(markers_list), ] %>% 
+  as.matrix()
+
+rowannot <- as.data.frame(marker_lookup)
+names(rowannot) <- "celltype_marker"
+
+pheatmap(phat_mat,
+         scale = "row",
+         breaks = seq(-4,4,0.1),
+         cluster_rows = F,
+         show_colnames = F, 
+         annotation_row = rowannot)
+```
+
+
+## feature plots
+
+```{r}
+fpl <- lapply(markers_list, function(x) x[[1]]) %>% unlist()
+FeaturePlot(bas,
+            features = fpl,
+            reduction = "pca",
+            order = T)
+```
+
+# barplots
+
+```{r}
+picked_cell <- c("BassezA_2021_33958794_BIOKEY_13_Pre_AAACGGGGTTCATGGT-1",
+                 "BassezA_2021_33958794_BIOKEY_13_Pre_GCTTGAAGTCAGATAA-1",
+                 "BassezA_2021_33958794_BIOKEY_13_Pre_TTTACTGTCAGTTGAC-1")
+
+
+barplot_cell <- lapply(picked_cell, function(pc){
+  tit <- strsplit(pc, "Pre_")[[1]][2]
+  
+  norm_mat %>% 
+    filter(cellid == pc) %>% 
+    ggplot(aes(expression, gene, fill = celltype_marker, color = celltype_marker)) +
+    geom_col(alpha = 0.3) +
+    labs(title = tit) +
+    ggpubr::theme_classic2()
+})
+  
+ggpubr::ggarrange(plotlist = barplot_cell,
+                  nrow = 1, common.legend = T)
+
+```
+
+
+
+
+# Key messages
 
 Key messages:
 
