@@ -4,3 +4,4 @@ figs/
 *.Rproj
 .DS_Store
 .Rhistory
+data/
